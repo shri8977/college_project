@@ -8,6 +8,7 @@ import { updatePassword, updateProfile } from 'firebase/auth';
 import { db, auth as firebaseAuth } from '../../firebase/firebase';
 import { AttendanceRecord } from '../../types';
 import { motion, AnimatePresence } from 'motion/react';
+import CameraCapture, { CameraCaptureResult } from '../../components/CameraCapture';
 import { 
   Camera, Calendar, Award, User, Clock, 
   CheckCircle2, XCircle, AlertTriangle, Play,
@@ -81,6 +82,10 @@ const StudentDashboard: React.FC = () => {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [isResettingFace, setIsResettingFace] = useState(false);
+
+  // CameraCapture Modal State
+  const [isCameraCaptureOpen, setIsCameraCaptureOpen] = useState(false);
+  const [cameraCapturePurpose, setCameraCapturePurpose] = useState<'profile' | 'test'>('profile');
 
   // Camera Refs
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -866,6 +871,19 @@ const StudentDashboard: React.FC = () => {
               <Settings className="w-4 h-4" />
               Profile Settings
             </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setCameraCapturePurpose('test');
+                setIsCameraCaptureOpen(true);
+              }}
+              className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold transition-all cursor-pointer text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-800 dark:hover:text-slate-200"
+              title="Test webcam permissions and take a snapshot"
+            >
+              <Camera className="w-4 h-4 text-violet-500" />
+              Test Face Camera
+            </button>
           </nav>
 
           {/* Time Override Sandbox Panel */}
@@ -1256,15 +1274,49 @@ const StudentDashboard: React.FC = () => {
 
                     <div className="md:col-span-2">
                       <label className="block text-sm font-medium text-slate-600 dark:text-slate-300 mb-2">
-                        Profile Photo URL (Optional)
+                        Profile Photo
                       </label>
-                      <input
-                        type="url"
-                        value={editPhotoURL}
-                        onChange={(e) => setEditPhotoURL(e.target.value)}
-                        placeholder="https://example.com/avatar.jpg"
-                        className="block w-full px-4 py-3 border border-slate-200 dark:border-slate-800 rounded-2xl bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-violet-500 text-sm"
-                      />
+                      <div className="flex flex-col sm:flex-row items-center gap-4 p-4 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                        <div className="w-16 h-16 rounded-2xl bg-slate-200 dark:bg-slate-800 flex items-center justify-center overflow-hidden border border-slate-300 dark:border-slate-700 shrink-0">
+                          {editPhotoURL ? (
+                            <img src={editPhotoURL} alt="Profile" className="w-full h-full object-cover" />
+                          ) : (
+                            <User className="w-8 h-8 text-slate-400" />
+                          )}
+                        </div>
+                        <div className="flex-1 w-full space-y-2.5">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              id="take-webcam-photo-button"
+                              type="button"
+                              onClick={() => {
+                                setCameraCapturePurpose('profile');
+                                setIsCameraCaptureOpen(true);
+                              }}
+                              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-semibold shadow-sm transition-all cursor-pointer"
+                            >
+                              <Camera className="w-3.5 h-3.5" />
+                              Take Photo with Webcam
+                            </button>
+                            {editPhotoURL && (
+                              <button
+                                type="button"
+                                onClick={() => setEditPhotoURL('')}
+                                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-medium transition-colors cursor-pointer"
+                              >
+                                Clear Photo
+                              </button>
+                            )}
+                          </div>
+                          <input
+                            type="url"
+                            value={editPhotoURL}
+                            onChange={(e) => setEditPhotoURL(e.target.value)}
+                            placeholder="Or paste an image URL (https://...)"
+                            className="block w-full px-3 py-2 border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-violet-500 text-xs"
+                          />
+                        </div>
+                      </div>
                     </div>
                   </div>
 
@@ -1535,6 +1587,58 @@ const StudentDashboard: React.FC = () => {
               )}
                 </>
               )}
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* CAMERA CAPTURE SNAPSHOT MODAL */}
+      <AnimatePresence>
+        {isCameraCaptureOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsCameraCaptureOpen(false)}
+              className="absolute inset-0 bg-slate-950/80 backdrop-blur-md"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              className="relative w-full max-w-lg z-10"
+            >
+              <CameraCapture
+                title={
+                  cameraCapturePurpose === 'profile'
+                    ? 'Capture Profile Photo'
+                    : 'Face Recognition Camera Test'
+                }
+                subtitle={
+                  cameraCapturePurpose === 'profile'
+                    ? 'Align your face in the oval and capture a clear snapshot'
+                    : 'Test webcam permissions, face detection & snapshot analysis'
+                }
+                confirmText={
+                  cameraCapturePurpose === 'profile'
+                    ? 'Use as Profile Photo'
+                    : 'Confirm Snapshot'
+                }
+                onCancel={() => setIsCameraCaptureOpen(false)}
+                onCapture={(result: CameraCaptureResult) => {
+                  if (cameraCapturePurpose === 'profile') {
+                    setEditPhotoURL(result.imageSrc);
+                    success('Profile snapshot captured! Click "Save Modifications" to apply.');
+                  } else {
+                    const descInfo = result.descriptor
+                      ? '128D Face Embedding extracted successfully.'
+                      : 'Snapshot captured.';
+                    success(`Snapshot verified! ${descInfo}`);
+                  }
+                  setIsCameraCaptureOpen(false);
+                }}
+              />
             </motion.div>
           </div>
         )}

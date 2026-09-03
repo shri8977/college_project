@@ -8,6 +8,7 @@ import FaceRegistration from '../pages/student/FaceRegistration';
 import StaffDashboard from '../pages/staff/StaffDashboard';
 import StaffRegister from '../pages/staff/StaffRegister';
 import AdminDashboard from '../pages/admin/AdminDashboard';
+import CameraTest from '../pages/CameraTest';
 
 // Custom component to protect routes based on login and user role
 const ProtectedRoute: React.FC<{
@@ -98,6 +99,12 @@ const AppRoutes: React.FC = () => {
             <SignUp />
           )
         }
+      />
+
+      {/* Camera Capture & Permissions Test Playground */}
+      <Route
+        path="/camera-test"
+        element={<CameraTest />}
       />
 
       {/* Student Protected Routes */}
