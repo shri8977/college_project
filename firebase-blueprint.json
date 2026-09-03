@@ -1,0 +1,99 @@
+{
+  "collections": {
+    "users": {
+      "schema": {
+        "uid": "string",
+        "name": "string",
+        "email": "string",
+        "role": "string",
+        "createdAt": "timestamp"
+      }
+    },
+    "students": {
+      "schema": {
+        "studentId": "string",
+        "uid": "string",
+        "studentName": "string",
+        "rollNumber": "string",
+        "department": "string",
+        "assignedClass": "string",
+        "year": "string",
+        "email": "string",
+        "faceRegistered": "boolean",
+        "faceEmbedding": "array",
+        "photoURL": "string",
+        "attendancePercentage": "number"
+      }
+    },
+    "face_descriptors": {
+      "schema": {
+        "uid": "string",
+        "descriptor": "array",
+        "createdAt": "string"
+      }
+    },
+    "staff": {
+      "schema": {
+        "staffId": "string",
+        "uid": "string",
+        "staffName": "string",
+        "department": "string",
+        "email": "string"
+      }
+    },
+    "attendance": {
+      "schema": {
+        "attendanceId": "string",
+        "studentId": "string",
+        "date": "string",
+        "entryTime": "string",
+        "exitTime": "string",
+        "entryStatus": "string",
+        "exitStatus": "string",
+        "overallStatus": "string"
+      }
+    },
+    "departments": {
+      "schema": {
+        "id": "string",
+        "name": "string"
+      },
+      "documents": {
+        "cse": {
+          "id": "cse",
+          "name": "Computer Science Engineering"
+        },
+        "it": {
+          "id": "it",
+          "name": "Information Technology"
+        },
+        "ece": {
+          "id": "ece",
+          "name": "Electronics & Communication"
+        },
+        "me": {
+          "id": "me",
+          "name": "Mechanical Engineering"
+        }
+      }
+    },
+    "settings": {
+      "schema": {
+        "id": "string",
+        "entryStartTime": "string",
+        "entryEndTime": "string",
+        "exitStartTime": "string",
+        "exitEndTime": "string"
+      },
+      "documents": {
+        "general": {
+          "id": "general",
+          "entryStartTime": "09:00",
+          "entryEndTime": "09:30",
+          "exitStartTime": "15:00",
+          "exitEndTime": "15:15"
+        }
+      }
+    }
+  }
+}

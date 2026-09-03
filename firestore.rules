@@ -1,0 +1,92 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper function to check if user is authenticated
+    function isAuth() {
+      return request.auth != null;
+    }
+    
+    // Helper function to check if the user exists in the users collection
+    function getUserRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    match /users/{userId} {
+      allow read: if isAuth();
+      allow write: if isAuth() && (request.auth.uid == userId || getUserRole() == "admin");
+    }
+
+    match /students/{studentId} {
+      allow read: if isAuth();
+      allow write: if isAuth() && (
+        request.auth.uid == studentId || 
+        (resource != null && resource.data.uid == request.auth.uid) ||
+        (request.resource != null && request.resource.data.uid == request.auth.uid) ||
+        getUserRole() == "admin" ||
+        getUserRole() == "staff"
+      );
+    }
+
+    match /face_descriptors/{descriptorId} {
+      allow read: if isAuth();
+      allow write: if isAuth() && (
+        request.auth.uid == descriptorId || 
+        (resource != null && resource.data.uid == request.auth.uid) ||
+        (request.resource != null && request.resource.data.uid == request.auth.uid) ||
+        getUserRole() == "admin"
+      );
+    }
+
+    match /staff/{staffId} {
+      allow read: if isAuth() && (
+        request.auth.uid == staffId || 
+        getUserRole() == "staff" || 
+        getUserRole() == "admin"
+      );
+      allow write: if isAuth() && (
+        request.auth.uid == staffId || 
+        getUserRole() == "admin"
+      );
+    }
+
+    match /staffs/{staffId} {
+      allow read: if isAuth() && (
+        request.auth.uid == staffId || 
+        getUserRole() == "staff" || 
+        getUserRole() == "admin"
+      );
+      allow write: if isAuth() && (
+        request.auth.uid == staffId || 
+        getUserRole() == "admin"
+      );
+    }
+
+    match /attendance/{attendanceId} {
+      allow read: if isAuth() && (
+        resource == null ||
+        resource.data.studentId == request.auth.uid || 
+        getUserRole() == "staff" || 
+        getUserRole() == "admin"
+      );
+      // Students can create and update their own attendance (e.g. entry status and exit time)
+      allow create: if isAuth() && request.resource.data.studentId == request.auth.uid;
+      allow update: if isAuth() && (
+        (resource.data.studentId == request.auth.uid && request.resource.data.studentId == request.auth.uid) || 
+        getUserRole() == "staff" || 
+        getUserRole() == "admin"
+      );
+      allow delete: if isAuth() && getUserRole() == "admin";
+    }
+
+    match /departments/{deptId} {
+      allow read: if isAuth();
+      allow write: if isAuth() && getUserRole() == "admin";
+    }
+
+    match /settings/{settingId} {
+      allow read: if isAuth();
+      allow write: if isAuth() && getUserRole() == "admin";
+    }
+  }
+}
