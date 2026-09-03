@@ -4,6 +4,8 @@ let modelsLoaded = false;
 let modelLoadingPromise: Promise<void> | null = null;
 let modelLoadingError: string | null = null;
 
+let offscreenDetectionCanvas: HTMLCanvasElement | null = null;
+
 /**
  * Loads the face-api.js neural network models from /models if not already loaded.
  */
@@ -18,11 +20,13 @@ export async function loadFaceApiModels(modelsUri: string = '/models'): Promise<
         faceapi.nets.tinyFaceDetector.loadFromUri(modelsUri),
         faceapi.nets.faceLandmark68Net.loadFromUri(modelsUri),
         faceapi.nets.faceRecognitionNet.loadFromUri(modelsUri),
+        faceapi.nets.ssdMobilenetv1.loadFromUri(modelsUri).catch((ssdErr) => {
+          console.warn('[face-api.js] SSD MobileNet optional model notice:', ssdErr?.message || ssdErr);
+        }),
       ]);
 
       // Optional helper models (load in background if present)
       faceapi.nets.faceLandmark68TinyNet.loadFromUri(modelsUri).catch(() => {});
-      faceapi.nets.ssdMobilenetv1.loadFromUri(modelsUri).catch(() => {});
 
       modelsLoaded = true;
       modelLoadingError = null;
@@ -35,9 +39,9 @@ export async function loadFaceApiModels(modelsUri: string = '/models'): Promise<
           faceapi.nets.tinyFaceDetector.loadFromUri('./models'),
           faceapi.nets.faceLandmark68Net.loadFromUri('./models'),
           faceapi.nets.faceRecognitionNet.loadFromUri('./models'),
+          faceapi.nets.ssdMobilenetv1.loadFromUri('./models').catch(() => {}),
         ]);
         faceapi.nets.faceLandmark68TinyNet.loadFromUri('./models').catch(() => {});
-        faceapi.nets.ssdMobilenetv1.loadFromUri('./models').catch(() => {});
 
         modelsLoaded = true;
         modelLoadingError = null;
@@ -102,9 +106,9 @@ export function calculateEAR(pts: Array<{ x: number; y: number }>): {
 }
 
 export const POSE_THRESHOLDS = {
-  STRAIGHT_MAX: 0.08, // |yaw| <= 0.08 is considered STRAIGHT
-  LEFT_MIN: -0.10,    // Yaw <= -0.10 is physically turned LEFT
-  RIGHT_MIN: 0.10,    // Yaw >= +0.10 is physically turned RIGHT
+  STRAIGHT_MAX: 0.12, // |yaw| <= 0.12 is considered STRAIGHT (forgiving of slight natural tilts)
+  LEFT_MIN: -0.07,    // Yaw <= -0.07 is physically turned LEFT
+  RIGHT_MIN: 0.07,    // Yaw >= +0.07 is physically turned RIGHT
 };
 
 export type PoseType = 'STRAIGHT' | 'LEFT' | 'RIGHT' | 'UNKNOWN';
@@ -194,7 +198,7 @@ export function calculateHeadPose(
   const rightEyeCenterX = (pts[36].x + pts[39].x) / 2;
   const leftEyeCenterX = (pts[42].x + pts[45].x) / 2;
   const eyeMidpointX = (rightEyeCenterX + leftEyeCenterX) / 2;
-  const interOcularDist = Math.max(1, leftEyeCenterX - rightEyeCenterX);
+  const interOcularDist = Math.max(1, Math.abs(leftEyeCenterX - rightEyeCenterX));
 
   // 3. Jaw landmarks for normalization (0: user right jaw on sensor left, 16: user left jaw on sensor right)
   const rightJawX = pts[0].x;
@@ -256,76 +260,146 @@ export async function detectFaceBiometrics(
   if (!input) return null;
 
   try {
-    // 1. Validate element dimensions and readyState before calling face-api.js
-    if (typeof HTMLVideoElement !== 'undefined' && input instanceof HTMLVideoElement) {
-      if (input.readyState < 2 || !input.videoWidth || !input.videoHeight || input.videoWidth <= 0 || input.videoHeight <= 0) {
+    await loadFaceApiModels();
+
+    // 1. Prepare target element: If input is HTMLVideoElement, snapshot frame into offscreen canvas
+    // to guarantee clean, synchronous pixel tensors and avoid WebGL video texture synchronization races.
+    let targetElement: HTMLCanvasElement | HTMLImageElement = input as any;
+    let inputW = 640;
+    let inputH = 480;
+
+    const isVideo =
+      (typeof HTMLVideoElement !== 'undefined' && input instanceof HTMLVideoElement) ||
+      ('videoWidth' in (input as any) && typeof (input as any).videoWidth === 'number');
+
+    if (isVideo) {
+      const vid = input as HTMLVideoElement;
+      if (vid.readyState < 1 && vid.videoWidth <= 0) {
         return null;
       }
+      inputW = vid.videoWidth || 640;
+      inputH = vid.videoHeight || 480;
+
+      if (inputW <= 0 || inputH <= 0) {
+        return null;
+      }
+
+      if (!offscreenDetectionCanvas) {
+        offscreenDetectionCanvas = document.createElement('canvas');
+      }
+      if (offscreenDetectionCanvas.width !== inputW || offscreenDetectionCanvas.height !== inputH) {
+        offscreenDetectionCanvas.width = inputW;
+        offscreenDetectionCanvas.height = inputH;
+      }
+
+      const ctx = offscreenDetectionCanvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) return null;
+      ctx.drawImage(vid, 0, 0, inputW, inputH);
+      targetElement = offscreenDetectionCanvas;
     } else if (typeof HTMLCanvasElement !== 'undefined' && input instanceof HTMLCanvasElement) {
       if (!input.width || !input.height || input.width <= 0 || input.height <= 0) {
         return null;
       }
+      inputW = input.width;
+      inputH = input.height;
+      targetElement = input;
     } else if (typeof HTMLImageElement !== 'undefined' && input instanceof HTMLImageElement) {
       if (!input.complete || !input.naturalWidth || !input.naturalHeight || input.naturalWidth <= 0 || input.naturalHeight <= 0) {
         return null;
       }
+      inputW = input.naturalWidth;
+      inputH = input.naturalHeight;
+      targetElement = input;
     }
 
-    await loadFaceApiModels();
-
     const inputSize = detectOpts?.inputSize || 320;
-    const scoreThreshold = detectOpts?.scoreThreshold || 0.15;
+    const scoreThreshold = detectOpts?.scoreThreshold || 0.10; // 0.10 threshold ensures high sensitivity on webcam video
     const shouldExtractDescriptor = detectOpts?.extractDescriptor !== false; // Default true
 
-    // Multi-tier detection for high reliability across various cameras and lightings
-    const primaryOptions = new faceapi.TinyFaceDetectorOptions({ inputSize, scoreThreshold });
-    
     let detectionResult: any = null;
     let allDetectionsCount = 0;
 
     if (shouldExtractDescriptor) {
-      // Full pipeline: detection + landmarks + 128D descriptor
-      const allResults = await faceapi
-        .detectAllFaces(input, primaryOptions)
+      // Tier 1: TinyFaceDetector with primary parameters
+      const primaryOptions = new faceapi.TinyFaceDetectorOptions({ inputSize, scoreThreshold });
+      let allResults = await faceapi
+        .detectAllFaces(targetElement, primaryOptions)
         .withFaceLandmarks()
         .withFaceDescriptors();
 
-      allDetectionsCount = allResults.length;
-      if (allResults.length > 0) {
-        detectionResult = allResults[0];
-      } else {
-        // Fallback with slightly higher inputSize and lower threshold
-        const fallbackOptions = new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.10 });
-        const fallbackResults = await faceapi
-          .detectAllFaces(input, fallbackOptions)
+      if (allResults.length === 0) {
+        // Tier 2: Higher resolution TinyFaceDetector
+        const fallbackOptions = new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.08 });
+        allResults = await faceapi
+          .detectAllFaces(targetElement, fallbackOptions)
           .withFaceLandmarks()
           .withFaceDescriptors();
-        
-        allDetectionsCount = fallbackResults.length;
-        if (fallbackResults.length > 0) {
-          detectionResult = fallbackResults[0];
+      }
+
+      if (allResults.length === 0) {
+        // Tier 3: Compact resolution TinyFaceDetector for close-up faces
+        const compactOptions = new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.08 });
+        allResults = await faceapi
+          .detectAllFaces(targetElement, compactOptions)
+          .withFaceLandmarks()
+          .withFaceDescriptors();
+      }
+
+      if (allResults.length === 0 && faceapi.nets.ssdMobilenetv1.isLoaded) {
+        // Tier 4: SSD MobileNet V1 high-accuracy detector
+        try {
+          const ssdOptions = new faceapi.SsdMobilenetv1Options({ minConfidence: 0.15 });
+          allResults = await faceapi
+            .detectAllFaces(targetElement, ssdOptions)
+            .withFaceLandmarks()
+            .withFaceDescriptors();
+        } catch (ssdErr) {
+          console.warn('[detectFaceBiometrics] SSD MobileNet fallback catch:', ssdErr);
         }
       }
-    } else {
-      // Fast tracking pipeline: detection + 68 landmarks (no heavy descriptor ResNet inference)
-      const allResults = await faceapi
-        .detectAllFaces(input, primaryOptions)
-        .withFaceLandmarks();
 
       allDetectionsCount = allResults.length;
       if (allResults.length > 0) {
         detectionResult = allResults[0];
-      } else {
-        // Fallback for fast tracking
-        const fallbackOptions = new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.10 });
-        const fallbackResults = await faceapi
-          .detectAllFaces(input, fallbackOptions)
-          .withFaceLandmarks();
+      }
+    } else {
+      // Fast tracking pipeline: Detection + 68 Landmarks without heavy ResNet descriptor inference
+      const primaryOptions = new faceapi.TinyFaceDetectorOptions({ inputSize, scoreThreshold });
+      let allResults = await faceapi
+        .detectAllFaces(targetElement, primaryOptions)
+        .withFaceLandmarks();
 
-        allDetectionsCount = fallbackResults.length;
-        if (fallbackResults.length > 0) {
-          detectionResult = fallbackResults[0];
+      if (allResults.length === 0) {
+        // Tier 2: Higher resolution TinyFaceDetector
+        const fallbackOptions = new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.08 });
+        allResults = await faceapi
+          .detectAllFaces(targetElement, fallbackOptions)
+          .withFaceLandmarks();
+      }
+
+      if (allResults.length === 0) {
+        // Tier 3: Compact resolution TinyFaceDetector
+        const compactOptions = new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.08 });
+        allResults = await faceapi
+          .detectAllFaces(targetElement, compactOptions)
+          .withFaceLandmarks();
+      }
+
+      if (allResults.length === 0 && faceapi.nets.ssdMobilenetv1.isLoaded) {
+        // Tier 4: SSD MobileNet V1 high-accuracy detector
+        try {
+          const ssdOptions = new faceapi.SsdMobilenetv1Options({ minConfidence: 0.15 });
+          allResults = await faceapi
+            .detectAllFaces(targetElement, ssdOptions)
+            .withFaceLandmarks();
+        } catch (ssdErr) {
+          console.warn('[detectFaceBiometrics] SSD fast tracking catch:', ssdErr);
         }
+      }
+
+      allDetectionsCount = allResults.length;
+      if (allResults.length > 0) {
+        detectionResult = allResults[0];
       }
     }
 
@@ -341,9 +415,9 @@ export async function detectFaceBiometrics(
     const pose = hasLandmarks
       ? calculateHeadPose(points)
       : {
-          physicalYaw: null,
-          pose: 'UNKNOWN' as PoseType,
-          isStraight: false,
+          physicalYaw: 0,
+          pose: 'STRAIGHT' as PoseType,
+          isStraight: true,
           isPhysicalTurnLeft: false,
           isPhysicalTurnRight: false,
           normalizedNoseOffset: 0,
@@ -359,16 +433,13 @@ export async function detectFaceBiometrics(
       height: b.height,
     };
 
-    const inputW = (input as HTMLVideoElement).videoWidth || (input as HTMLCanvasElement).width || 640;
-    const inputH = (input as HTMLVideoElement).videoHeight || (input as HTMLCanvasElement).height || 480;
-
     const centerX = box.x + box.width / 2;
     const centerY = box.y + box.height / 2;
     const normX = inputW > 0 ? centerX / inputW : 0.5;
     const normY = inputH > 0 ? centerY / inputH : 0.5;
 
-    // Generous center tolerance: 12% to 88% horizontally and vertically
-    const isCentered = normX >= 0.12 && normX <= 0.88 && normY >= 0.10 && normY <= 0.90;
+    // Generous center tolerance: 10% to 90% horizontally and vertically
+    const isCentered = normX >= 0.10 && normX <= 0.90 && normY >= 0.08 && normY <= 0.92;
 
     return {
       detection: detectionResult.detection,

@@ -208,7 +208,7 @@ export const CameraCapture: React.FC<CameraCaptureProps> = ({
         };
       }
     } catch (err: any) {
-      console.error('[CameraCapture] getUserMedia error:', err);
+      console.warn('[CameraCapture] getUserMedia notice:', err?.message || err);
       const name = err?.name || '';
 
       if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
